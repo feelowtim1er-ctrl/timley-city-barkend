@@ -1,0 +1,193 @@
+import pygame, random, math
+pygame.init()
+
+WIDTH, HEIGHT = 1000, 700
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+clock = pygame.time.Clock()
+
+# Couleurs
+GREEN=(34,177,76); RED=(200,0,0); BLUE=(0,0,200)
+YELLOW=(255,255,0); ORANGE=(255,165,0); WHITE=(255,255,255)
+BLACK=(0,0,0); GRAY=(100,100,100); BROWN=(139,69,19)
+
+# Sons (remplacer par fichiers réels)
+pygame.mixer.init()
+engine_sound = pygame.mixer.Sound("engine.wav")
+shoot_sound = pygame.mixer.Sound("shoot.wav")
+hit_sound = pygame.mixer.Sound("hit.wav")
+
+# Niveau de recherche
+wanted_level = 0  # 0 à 5
+wanted_timer = 0
+
+def increase_wanted(amount=1):
+    global wanted_level, wanted_timer
+    wanted_level += amount
+    if wanted_level > 5: wanted_level = 5
+    wanted_timer = 300  # durée avant diminution automatique
+
+def decrease_wanted():
+    global wanted_level, wanted_timer
+    if wanted_timer > 0:
+        wanted_timer -= 1
+    else:
+        if wanted_level > 0:
+            wanted_level -= 1
+            wanted_timer = 300
+
+def draw_wanted(surface):
+    for i in range(wanted_level):
+        x = 20 + i*30
+        y = 20
+        # Dessiner une étoile simple (polygon approximatif)
+        pygame.draw.polygon(surface, YELLOW, [
+            (x, y-10), (x+5, y+5), (x-10, y-5),
+            (x+10, y-5), (x-5, y+5)
+        ])
+
+# Classes de base
+class Character:
+    def __init__(self,x,y,color,is_player=False,gang=None):
+        self.x=x; self.y=y; self.color=color
+        self.width=30 if not is_player else 40
+        self.height=30 if not is_player else 40
+        self.is_player=is_player; self.gang=gang
+        self.health=100; self.speed=0; self.angle=0
+        self.in_vehicle=False; self.vehicle=None; self.cooldown=0
+    def update(self,keys=None,vehicles=[],pnjs=[],bullets=[],buildings=[]):
+        if self.is_player:
+            if self.in_vehicle:
+                if keys[pygame.K_UP]: self.vehicle.speed+=0.2; engine_sound.play()
+                else: self.vehicle.speed-=0.05
+                if keys[pygame.K_DOWN]: self.vehicle.speed-=0.2
+                if keys[pygame.K_LEFT]: self.vehicle.angle+=3*(self.vehicle.speed/self.vehicle.max_speed)
+                if keys[pygame.K_RIGHT]: self.vehicle.angle-=3*(self.vehicle.speed/self.vehicle.max_speed)
+                self.vehicle.update(); self.x=self.vehicle.x; self.y=self.vehicle.y
+            else:
+                dx=dy=0
+                if keys[pygame.K_UP]: dy-=5
+                if keys[pygame.K_DOWN]: dy+=5
+                if keys[pygame.K_LEFT]: dx-=5
+                if keys[pygame.K_RIGHT]: dx+=5
+                self.x+=dx; self.y+=dy
+        else:
+            self.x += random.choice([-1,0,1])*2
+            self.y += random.choice([-1,0,1])*2
+            for b in buildings:
+                if b.collidepoint(self.x,self.y):
+                    self.x+=random.choice([-5,5])
+                    self.y+=random.choice([-5,5])
+        if self.cooldown>0: self.cooldown-=1
+    def shoot(self,bullets,target_x,target_y):
+        global wanted_level
+        if self.cooldown==0:
+            dx=target_x-self.x; dy=target_y-self.y
+            angle=math.atan2(dy,dx)
+            bullets.append(Bullet(self.x,self.y,angle,self))
+            self.cooldown=20; shoot_sound.play()
+            increase_wanted(1)  # Tir augmente le niveau
+    def draw(self,surface,camera_x,camera_y):
+        pygame.draw.rect(surface,self.color,(self.x-camera_x,self.y-camera_y,self.width,self.height))
+        pygame.draw.rect(surface,RED,(self.x-camera_x,self.y-10-camera_y,self.width*self.health/100,5))
+
+class Bullet:
+    def __init__(self,x,y,angle,owner):
+        self.x=x; self.y=y; self.angle=angle
+        self.speed=10; self.owner=owner; self.alive=True
+    def update(self,pnjs,buildings):
+        self.x += math.cos(self.angle)*self.speed
+        self.y += math.sin(self.angle)*self.speed
+        for p in pnjs:
+            if p!=self.owner and p.x<self.x<p.x+p.width and p.y<self.y<p.y+p.height:
+                p.health-=20; hit_sound.play(); self.alive=False; increase_wanted(1)
+        for b in buildings:
+            if b.collidepoint(self.x,self.y): self.alive=False
+    def draw(self,surface,camera_x,camera_y):
+        pygame.draw.circle(surface,BLACK,(int(self.x-camera_x),int(self.y-camera_y)),3)
+
+# Véhicules
+class Vehicle:
+    def __init__(self,x,y,color,emergency=False):
+        self.x=x; self.y=y; self.color=color
+        self.width=60; self.height=40
+        self.angle=0; self.speed=0; self.max_speed=8
+        self.emergency=emergency; self.health=100
+    def update(self):
+        rad=math.radians(self.angle)
+        self.x-=self.speed*math.sin(rad)
+        self.y-=self.speed*math.cos(rad)
+        if self.speed>0: self.speed-=0.05
+        if self.speed<0: self.speed+=0.05
+    def draw(self,surface,camera_x,camera_y):
+        rotated=pygame.Surface((self.width,self.height))
+        rotated.fill(self.color); rotated.set_colorkey(BLACK)
+        rotated=pygame.transform.rotate(rotated,self.angle)
+        rect=rotated.get_rect(center=(self.x-camera_x,self.y-camera_y))
+        surface.blit(rotated,rect.topleft)
+        pygame.draw.rect(surface,RED,(self.x-camera_x,self.y-10-camera_y,self.width*self.health/100,5))
+
+# Transports supplémentaires
+class Train(Vehicle):
+    def __init__(self,x,y,color):
+        super().__init__(x,y,color); self.speed=2
+    def update(self):
+        self.x += self.speed
+class Boat(Vehicle):
+    def update(self):
+        self.x += math.cos(math.radians(self.angle))*self.speed
+        self.y += math.sin(math.radians(self.angle))*self.speed
+        if self.speed>0: self.speed-=0.02
+class Plane(Vehicle):
+    def update(self):
+        self.x += math.cos(math.radians(self.angle))*self.speed
+        self.y += math.sin(math.radians(self.angle))*self.speed
+        if self.speed>0: self.speed-=0.05
+
+# Initialisation
+player = Character(400,300,RED,is_player=True)
+vehicles=[Vehicle(500,500,BLUE), Vehicle(600,600,YELLOW,emergency=True)]
+trains=[Train(0,100,GRAY)]
+boats=[Boat(200,600,BROWN)]
+planes=[Plane(100,50,WHITE)]
+pnjs=[Character(random.randint(100,1800),random.randint(100,1800),ORANGE,gang="A") for _ in range(5)]
+pnjs+= [Character(random.randint(100,1800),random.randint(100,1800),WHITE,gang="B") for _ in range(5)]
+buildings=[pygame.Rect(300,300,200,150),pygame.Rect(1500,1500,300,200)]
+bullets=[]
+
+# Boucle principale
+running=True
+while running:
+    dt=clock.tick(60)
+    keys=pygame.key.get_pressed()
+    for event in pygame.event.get():
+        if event.type==pygame.QUIT: running=False
+        if event.type==pygame.KEYDOWN:
+            if event.key==pygame.K_e:
+                if player.in_vehicle:
+                    player.in_vehicle=False; player.x=player.vehicle.x+50; player.y=player.vehicle.y; player.vehicle=None
+                else:
+                    for v in vehicles+trains+boats+planes:
+                        if math.hypot(player.x-v.x,player.y-v.y)<50:
+                            player.in_vehicle=True; player.vehicle=v; break
+            if event.key==pygame.K_SPACE:
+                mx,my=pygame.mouse.get_pos()
+                player.shoot(bullets,mx+player.x-WIDTH//2,my+player.y-HEIGHT//2)
+
+    # Mise à jour
+    player.update(keys,vehicles+trains+boats+planes,pnjs,bullets,buildings)
+    for v in vehicles+trains+boats+planes: v.update()
+    for p in pnjs: p.update(vehicles+trains+boats+planes,buildings=buildings)
+    for b in bullets: b.update(pnjs,buildings)
+    bullets=[b for b in bullets if b.alive]
+
+    decrease_wanted()  # Diminuer les étoiles progressivement
+
+    camera_x=player.x-WIDTH//2; camera_y=player.y-HEIGHT//2
+    screen.fill(GREEN)
+    for bld in buildings: pygame.draw.rect(screen,(50,50,50),(bld.x-camera_x,bld.y-camera_y,bld.width,bld.height))
+    for v in vehicles+trains+boats+planes: v.draw(screen,camera_x,camera_y)
+    for p in pnjs: p.draw(screen,camera_x,camera_y)
+    for b in bullets: b.draw(screen,camera_x,camera_y)
+    player.draw(screen,camera_x,camera_y)
+    draw_wanted(screen)  # Afficher les étoiles
+    pygame.display.flip()
